@@ -9,11 +9,14 @@ File::KeePass::Agent::unix - platform specific utilities for Agent
 use strict;
 use warnings;
 use Carp qw(croak);
-use X11::GUITest qw(PressKey ReleaseKey PressReleaseKey SendKeys QuoteStringForSendKeys IsKeyPressed);
 use X11::Protocol;
 use vars qw(%keysyms);
 use X11::Keysyms qw(%keysyms); # part of X11::Protocol
 use IO::Prompt qw(prompt);
+#use Term::ReadKey qw(ReadMode GetControlChars);
+
+#my @end;
+#END { $_->() for @end };
 
 sub prompt_for_file {
     my $self = shift;
@@ -21,12 +24,23 @@ sub prompt_for_file {
     if ($last_file && $last_file =~ m{ ^./..(/.+)$ }x) {
         $last_file = $self->home_dir . $1;
     }
-    return ''.prompt("Choose the kdb file to open: ", ($last_file ? (-d => $last_file) : ()));
+    my $file = ''.prompt("Choose the kdb file to open: ", ($last_file ? (-d => $last_file) : ()), -tty);
+    if ($last_file
+        && $file
+        && $last_file ne $file
+        && -e $file
+        && prompt("Save $file as default kdb database?", -yn, -d => 'y', -tty)) {
+        my $home = $self->home_dir;
+        my $copy = ($file =~ m{^\Q$home\E(/.+)$ }x) ? "./..$1" : $file;
+        $self->write_config(last_file => $copy);
+    }
+
+    return $file;
 }
 
 sub prompt_for_pass {
     my ($self, $file) = @_;
-    return ''.prompt("Enter your master key for $file: ", -e => '*');
+    return ''.prompt("Enter your master key for $file: ", -e => '*', -tty);
 }
 
 sub home_dir {
@@ -34,34 +48,26 @@ sub home_dir {
     return $home || croak "Couldn't find home dir for uid $<";
 }
 
+sub _config_file {
+    my $self = shift;
+    my $home = $self->home_dir;
+    return "$home/.keepassx/config" if -e "$home/.keepassx/config";
+    return "$home/.config/keepassx/config.ini";
+}
+
+my %map = (
+    last_file => 'LastFile',
+    pre_gap   => 'AutoTypePreGap',
+    key_delay => 'AutoTypeKeyStrokeDelay',
+    );
+
 sub read_config {
     my ($self, $key) = @_;
-    croak "Missing read_config key" if ! $key;
-
-    my $c = $self->{'config'};
-    if (! $c) {
-        my $home = $self->home_dir;
-        my $file = "$home/.config/keepassx/config.ini";
-        $c = $self->{'config'} = {};
-        if (open my $fh, '<', $file) { # ick - my own config.ini reader - too bad the main cpan entries are overbloat
-            my $block = '';
-            while (defined(my $line = <$fh>)) {
-                $line =~ s/^\s+//;
-                $line =~ s/\s+$//;
-		if ($line =~ /^ \[\s* (.*?) \s*\] $/x) {
-                    $block = $1;
-                    next;
-                } elsif (!length $line || $line =~ /^[;\#]/) {
-                    next;
-		}
-		my ($key, $val) = split /\s*=\s*/, $line, 2;
-                $c->{$block}->{$key} = $val;
-            }
-	}
-    }
-
-    if ($key eq 'last_file') {
-        return $c->{'Options'}->{'LastFile'};
+    my $c = $self->{'config'} ||= $self->_ini_parse($self->_config_file);
+    if (! $key) {
+        return $c;
+    } elsif (my $_key = $map{$key}) {
+        return $c->{'Options'}->{$_key};
     }
     elsif ($key eq 'global_shortcut') {
         return if ! defined(my $key = $c->{'Options'}->{'GlobalShortcutKey'});
@@ -78,9 +84,21 @@ sub read_config {
         };
         @{ $s }{qw(ctrl alt)} = (1, 1) if delete $s->{'altgr'};
         return $s;
+    } else {
+        die "Unknown key $key";
     }
+}
 
-    return;
+sub write_config {
+    my ($self, $key, $val) = @_;
+    my $c = $self->_ini_parse($self->_config_file, 1);
+    if (my $_key = $map{$key}) {
+        $c->{'Options'}->{$_key} = $val;
+    } else {
+        return;
+    }
+    $self->_ini_write($c, $self->_config_file);
+    delete $self->{'config'};
 }
 
 sub x {
@@ -93,9 +111,17 @@ sub x {
 
 sub grab_global_keys {
     my ($self, @callbacks) = @_;
-    my $x = $self->x;
+    #my $ShiftMask                = 1;
+    #my $LockMask                 = 2;
+    #my $ControlMask              = 4;
+    #my $Mod1Mask                 = 8;
+    my $Mod2Mask                 = 16;
+    #my $Mod3Mask                 = 32;
+    #my $Mod4Mask                 = 64;
+    #my $Mod5Mask                 = 128;
 
-    my %map;
+    my $x = $self->x;
+    my %cb_map;
     foreach my $c (@callbacks) {
         my ($shortcut, $callback) = @$c;
 
@@ -107,39 +133,75 @@ sub grab_global_keys {
         }
         my $seq = eval { $x->GrabKey($code, $mod, $x->root, 1, 'Asynchronous', 'Asynchronous') };
         croak "The key binding ".$self->shortcut_name($shortcut)." is already in use" if ! $seq;
-        $map{$code}->{$mod} = $callback;
+        $seq = eval { $x->GrabKey($code, $mod|$Mod2Mask, $x->root, 1, 'Asynchronous', 'Asynchronous') };
+        #$seq = eval { $x->GrabKey($code, $mod|$LockMask, $x->root, 1, 'Asynchronous', 'Asynchronous') };
+        #$seq = eval { $x->GrabKey($code, $mod|$Mod2Mask|$LockMask, $x->root, 1, 'Asynchronous', 'Asynchronous') };
+        $cb_map{$code}->{$mod} = $cb_map{$code}->{$mod|$Mod2Mask} = $callback;
     }
 
     $x->event_handler('queue');
+
+    #my $in_fh = \*STDIN;
+    #local $SIG{'INT'} = sub { ReadMode 'restore', $in_fh; exit };
+    #push @end, sub { ReadMode 'restore', $in_fh };
+    #ReadMode 'noecho', $in_fh;
+    #ReadMode 'raw',    $in_fh;
+
+    #require IO::Select;
+    #my $x_fh  = $x->{'connection'}->fh;
+    #my $sel   = IO::Select->new($in_fh, $x_fh);
+
     my $i;
     while (1) {
-        my %event = $x->next_event;
-        next if ($event{'name'} || '') ne 'KeyRelease';
-        my $code = $event{'detail'};
-        my $mod  = $event{'state'};
-        my $callback = $map{$code}->{$mod} || next;
-
-        my ($wid) = $x->GetInputFocus;
-        my $orig  = $wid;
-        my $title = eval { $self->wm_name($wid) };
-        while (!defined($title) || ! length($title)) {
-            last if $wid == $x->root;
-            my ($root, $parent) = $x->QueryTree($wid);
-            last if $parent == $wid;
-            $wid = $parent;
-            $title = eval { $self->wm_name($wid) };
-        }
-        if (!defined($title) || !length($title)) {
-            warn "Couldn't find window title for window id $orig\n";
-            next;
-        }
-        $event{'_window_id'} = $wid;
-        $event{'_window_id_orig'} = $orig;
-        $self->$callback($title, \%event);
-
+        #for my $fh ($sel->can_read(0)) {
+         #   print "($fh $in_fh $x_fh)\n";
+            #if ($fh == $in_fh) {
+            #    $self->handle_term_input($fh);
+            #} else {
+                $self->read_x_event(\%cb_map);
+            #}
+        #}
     }
 
 #    $x->UngrabKey($code, $mod, $x->root);
+}
+
+#sub handle_term_input {
+#    my ($self, $fh) = @_;
+#
+#    my %cntl = GetControlChars $fh;
+#    do {
+#        my $chr = getc $fh;
+#        exit if $chr eq "\e" || $chr eq $cntl{'INTERRUPT'} || $chr eq $cntl{'EOF'};
+#        print ">>>$chr\n";
+#    } until ! IO::Select->new($fh)->can_read;
+#}
+
+sub read_x_event {
+    my ($self, $cb_map) = @_;
+    my $x = $self->x;
+    my %event = $x->next_event;
+    return if ($event{'name'} || '') ne 'KeyRelease';
+    my $code = $event{'detail'};
+    my $mod  = $event{'state'};
+    my $callback = $cb_map->{$code}->{$mod} || return;
+    my ($wid) = $x->GetInputFocus;
+    my $orig  = $wid;
+    my $title = eval { $self->wm_name($wid) };
+    while (!defined($title) || ! length($title)) {
+        last if $wid == $x->root;
+        my ($root, $parent) = $x->QueryTree($wid);
+        last if $parent == $wid;
+        $wid = $parent;
+        $title = eval { $self->wm_name($wid) };
+    }
+    if (!defined($title) || !length($title)) {
+        warn "Could not find window title for window id $orig\n";
+        return;
+    }
+    $event{'_window_id'} = $wid;
+    $event{'_window_id_orig'} = $orig;
+    $self->$callback($title, \%event);
 }
 
 ###----------------------------------------------------------------###
@@ -149,15 +211,60 @@ sub keymap {
     return $self->{'keymap'} ||= do {
         my $min = $self->x->{'min_keycode'};
         my @map = $self->x->GetKeyboardMapping($min, $self->x->{'max_keycode'} - $min);
-        croak "Couldn't find the keyboard map" if ! @map;
-        my $m = {map { $map[$_][0] => $_ + $min } 0 .. $#map}; # return of the do
+        my %map;
+        my $req_sh = $self->{'requires_shift'} = {};
+        my %rev = reverse %keysyms;
+        foreach my $m (@map) {
+            my $code = $min++;
+            foreach my $pair ([$m->[0], 0], (($m->[1] && $m->[1] != $m->[0]) ? ([$m->[1], 1]) : ())) {
+                my ($sym, $shift) = @$pair;
+                my $name = $rev{$sym};
+                if ($name && ! $map{$name}) {
+                    $map{$name} = $code;
+                    $req_sh->{$name} = 1 if $shift;
+                }
+                my $chr = ($sym < 0xFF00) ? chr($sym) : ($sym <= 0xFFFF) ? chr(0xFF & $sym) : next;
+                if (defined($name) && $chr ne $name && !$map{$chr}) {
+                    $map{$chr} = $code;
+                    $req_sh->{$chr} = 1 if $shift;
+                }
+            }
+        }
+        $map{"\n"} = $map{"\r"}; # \n mapped to Linefeed - we want it to be Return
+        $req_sh->{"\n"} = $req_sh->{"\r"};
+        \%map;
     };
+}
+
+sub requires_shift {
+    my $self = shift;
+    $self->keymap;
+    return $self->{'requires_shift'};
 }
 
 sub keycode {
     my ($self, $key) = @_;
-    $key = $keysyms{$key} if $key !~ /^\d+$/;
     return $self->keymap->{$key};
+}
+
+sub is_key_pressed {
+    my $self = shift;
+    my $key  = shift || return;
+    my $keys = shift || $self->x->QueryKeymap;
+    my $code = $self->keycode($key) || return;
+    my $byte = substr($keys, $code/8, 1);
+    my $n    = ord $byte;
+    my $on   = $n & (1 << ($code % 8));
+    if ($self->requires_shift->{$key} && @_ <= 3) {
+        return if ! $self->is_key_pressed('Shift_L', $keys, 'norecurse');
+    }
+    return $on;
+}
+
+sub are_keys_pressed {
+    my $self = shift;
+    my $keys = $self->x->QueryKeymap;
+    return grep { $self->is_key_pressed($_, $keys) } @_;
 }
 
 ###----------------------------------------------------------------###
@@ -201,22 +308,114 @@ sub all_children {
 
 sub send_key_press {
     my ($self, $auto_type, $entry, $title, $event) = @_;
-    warn "Auto-Type: $entry->{'title'}\n";
+    warn "Auto-Type: $entry->{'title'}\n" if ref($entry);
+
+    my ($wid) = $self->x->GetInputFocus;
 
     # wait for all other keys to clear out before we begin to type
     my $i = 0;
-    while (my @pressed = grep {IsKeyPressed($_)} qw(LSH RSH LCT RCT LAL RAL LMA RMA)) {
-        print "Waiting for @pressed\n" if ! (++$i % 100);
+    while (my @pressed = $self->are_keys_pressed(qw(Shift_L Shift_R Control_L Control_R Alt_L Alt_R Meta_L Meta_R Super_L Super_R Hyper_L Hyper_R Escape))) {
+        print "Waiting for @pressed\n" if 5 == (++$i % 40);
         select(undef,undef,undef,.05)
     }
 
-    my $s = QuoteStringForSendKeys($auto_type);
-    $s =~ s/(?<!\{)\#/{#}/g; # take care of X11::GUITest missing one
-
-    SendKeys($s);
-
+    my $pre_gap = $self->read_config('pre_gap')   * .001 * 10;
+    my $delay   = $self->read_config('key_delay') * .001 * 10;
+    my $keymap = $self->keymap;
+    my $shift  = $self->requires_shift;
+    select undef, undef, undef, $pre_gap if $pre_gap;
+    for my $key (split //, $auto_type) {
+        my ($_wid) = $self->x->GetInputFocus; # send the key stroke
+        if ($_wid != $wid) {
+            warn "Window changed.  Aborted Auto-type.\n";
+            last;
+        }
+        my $code  = $keymap->{$key};
+        my $state = $shift->{$key} || 0;
+        if (! defined $code) {
+            warn "Couldn't find code for $key\n";
+            next;
+        }
+        select undef, undef, undef, $delay if $delay;
+        $self->key_press($code, $state, $wid);
+        $self->key_release($code, $state, $wid);
+    }
     return;
 }
+
+sub key_press {
+    my ($self, $code, $state, $wid) = @_;
+    my $x    = $self->x;
+    ($wid) = $self->x->GetInputFocus if ! $wid;
+    return $x->SendEvent($wid, 0, 0, $x->pack_event(
+        name   => "KeyPress",
+        detail => $code,
+        time   => 0,
+        root   => $x->root,
+        event  => $wid,
+        state  => $state || 0,
+        same_screen => 1,
+    ));
+}
+
+sub key_release {
+    my ($self, $code, $state, $wid) = @_;
+    my $x    = $self->x;
+    ($wid) = $self->x->GetInputFocus if ! $wid;
+    return $x->SendEvent($wid, 0, 0, $x->pack_event(
+        name   => "KeyRelease",
+        detail => $code,
+        time   => 0,
+        root   => $x->root,
+        event  => $wid,
+        state  => $state || 0,
+        same_screen => 1,
+    ));
+}
+
+###----------------------------------------------------------------###
+
+sub _ini_parse { # ick - my own config.ini reader - too bad the main cpan entries are overbloat
+    my ($self, $file, $order) = @_;
+    open my $fh, '<', $file or return {};
+    my $block = '';
+    my $c = {};
+    while (defined(my $line = <$fh>)) {
+        $line =~ s/^\s+//;
+        $line =~ s/\s+$//;
+        if ($line =~ /^ \[\s* (.*?) \s*\] $/x) {
+            $block = $1;
+            push @{ $c->{"\eorder\e"} }, $block if $order;
+            next;
+        } elsif (!length $line || $line =~ /^[;\#]/) {
+            push @{ $c->{$block}->{"\eorder\e"} }, \$line if $order;
+            next;
+        }
+        my ($key, $val) = split /\s*=\s*/, $line, 2;
+        $c->{$block}->{$key} = $val;
+        push @{ $c->{$block}->{"\eorder\e"} }, $key if $order;
+    }
+    return $c;
+}
+
+sub _ini_write {
+    my ($self, $c, $file) = @_;
+    open my $fh, "+<", $file or die "Could not open file $file for writing: $!";
+    for my $block (@{ $c->{"\eorder\e"} || [sort keys %$c] }) {
+        print $fh "[$block]\n";
+        my $ref = $c->{$block} || {};
+        for my $key (@{ $ref->{"\eorder\e"} || [sort keys %$ref] }) {
+            if (ref($key) eq 'SCALAR') {
+                print $fh $$key,"\n";
+            } else {
+                print $fh "$key=".(defined($ref->{$key}) ? $ref->{$key} : '')."\n";
+            }
+        }
+    }
+    truncate $fh, tell($fh);
+    close $fh;
+}
+
 
 =head1 DESCRIPTION
 
@@ -284,9 +483,24 @@ Returns an X11::Protocol object
 
 Returns the keymap in use by the X server.
 
+=item C<keysym>
+
+Returns the keysym id used by the X server.
+
 =item C<keycode>
 
 Takes a key - returns the appropriate key code for use in grab_global_keys
+
+=item C<is_key_pressed>
+
+Returns true if the key is currently pressed.  Most useful for items
+like Control_L, Shift_L, or Alt_L.
+
+=item C<are_keys_pressed>
+
+Takes an array of key names and returns which ones are currently
+pressed.  It has a little bit of caching as part of the process of
+calling is_key_pressed.  Returns any of the key names that are pressed.
 
 =item C<attributes>
 

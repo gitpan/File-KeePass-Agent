@@ -6,11 +6,19 @@ SYNOPSIS
        use File::KeePass::Agent;
        File::KeePass::Agent->new->run($file, $pass);
 
-       # OR
-       File::KeePass::Agent->new->run; # will read from @ARGV or prompt
 
-       # OR
-       File::KeePass::Agent::run(); # will read from @ARGV or prompt
+       File::KeePass::Agent->new->run;  # will read from @ARGV or prompt
+
+
+       File::KeePass::Agent::run();  # will read from @ARGV or prompt
+
+
+       File::KeePass::Agent::run(\%files);  # file/pass pairs
+
+
+       File::KeePass::Agent::run(\@files);
+
+       File::KeePass::Agent::run(\@files, \@passes);  # parallel arrays
 
     You may pass the name of the keepass filename that you would like to
     open. Otherwise you are prompted for the file to open.
@@ -42,14 +50,14 @@ METHODS
         more maintenance features.
 
     "keepass"
-        Returns a File::KeePass object used for reading the database and
-        keeping the entries looked in memory.
+        Returns an arrayref of arrayrefs continaing file and File::KeePass
+        object pairs.
 
     "shortcut_name"
         Returns a human readable name from a shortcut hashref.
 
     "active_entries"
-        Finds current active entries from the current database.
+        Finds current active entries from any of the open databases.
 
     "active_searches"
         Parses the active searches and returns a listing of qr
