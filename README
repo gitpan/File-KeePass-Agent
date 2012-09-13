@@ -1,6 +1,6 @@
 NAME
     File::KeePass::Agent - Application agent for working with File::KeePass
-    files
+    objects
 
 SYNOPSIS
        use File::KeePass::Agent;
@@ -23,8 +23,8 @@ SYNOPSIS
     You may pass the name of the keepass filename that you would like to
     open. Otherwise you are prompted for the file to open.
 
-    You are then prompted for the password that will be used to open the
-    file.
+    You are then prompted for the password and/or the keyfile that will be
+    used to open the file.
 
     See File::KeePass for a listing of what KeyPass database features are
     currently handled.
@@ -92,12 +92,13 @@ GLOBAL SHORTCUTS
     Additionally, custom global shortcuts may defined in the comments
     section of the FKP database entries. They have the form:
 
-       Custom-Global-Shortcut:  Ctrl-Alt-Shift w
+       Custom-Global-Shortcut: Ctrl-Alt-Shift w
 
     This allows for individual entry auto-typing to be called directly.
 
 AUTOTYPE SUPPORT
-    Comment sections of entries may contain Auto-type entries in the
+    Version 2 databases natively support auto-type entries. Comment sections
+    of version 1 database entries may contain Auto-type entries in the
     following form:
 
         Auto-Type-Window: Admin Login*
@@ -111,7 +112,7 @@ AUTOTYPE SUPPORT
     If a window matches an Auto-Type-Window entry the corresponding
     Auto-Type item will be processed and "auto-typed" to the current window.
 
-    Currently the following auto-type directives are supported.
+    Currently the following auto-type directives are supported:
 
     "USERNAME"
         The username for the entry.

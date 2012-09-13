@@ -1,7 +1,7 @@
 --- #YAML:1.0
 name:               File-KeePass-Agent
-version:            0.03
-abstract:           Application agent for working with File::KeePass files
+version:            2.00
+abstract:           Application agent for working with File::KeePass objects
 author:
     - Paul Seamons
 license:            unknown
